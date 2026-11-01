@@ -10,6 +10,7 @@
 #   ~/.local/bin/oni-ae-launcher.sh  runs the AE Installer on native Java 8 (OniSplit on native mono)
 #   ~/.local/share/applications/oni-ae-{game,launcher}.desktop   "Oni (AE)", "Oni Anniversary Edition"
 #   ~/.local/share/icons/hicolor/*/apps/oni-ae-{game,launcher}.png   taken from Oni.exe and AElogo.ico
+#   ~/.local/state/oni-installer/install-<date>.log   what each run did; it ends with the AE Installer's log
 #
 #   ./install-oni.sh [--source PATH] [--prefix DIR] [--no-ae] [--no-arklite] [--yes]
 #   ./install-oni.sh --uninstall [--prefix DIR] [--purge] [--yes]
@@ -36,12 +37,16 @@ BIN="$HOME/.local/bin"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 APPS="$DATA/applications"
 ICONS="$DATA/icons/hicolor"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/oni-installer"
+LOG="" LOG_PID="" ISSUES=0
 
 die() { echo "error: $*" >&2; exit 1; }
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+warn() { echo "warning: $*" >&2; ISSUES=$((ISSUES + 1)); }
 ask() { [ "$YES" = 1 ] && return 0; local a; read -rp "$1 [Y/n] " a; [[ -z "$a" || "$a" =~ ^[Yy] ]]; }
 usage() { sed -n '2,/^set -e/{/^set -e/d;s/^# \{0,1\}//;p}' "$0"; exit "${1:-0}"; }
 
+ARGS="$*"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--prefix)     PREFIX="${2:?}"; shift ;;
@@ -66,6 +71,12 @@ expand_path() {   # ~ and relative paths to an absolute one
 short_path() { case "$1" in "$HOME") echo "~" ;; "$HOME/"*) echo "~/${1#"$HOME"/}" ;; *) echo "$1" ;; esac; }
 oni_dir() { echo "$1/drive_c/Program Files (x86)/Oni"; }
 is_oni() { [ -f "$1/Oni.exe" ] && [ -f "$1/GameDataFolder/level0_Final.dat" ]; }
+# AE/Oni.exe doesn't count: the AE Installer puts it there as soon as it opens. Only Install makes levels.
+ae_done() { [ -f "$AE/GameDataFolder/level0_Final.dat" ]; }
+# The last Install left out XML patches: a level0 with no XmlTools run in it plays differently, and
+# multiplayer refuses it against every PC whose patches went in.
+ae_patch_failed() { grep -qs 'Execution of external tool failed' "$AE/AEInstaller/Installation.log"; }
+ae_ready() { ae_done && ! ae_patch_failed; }
 
 # --- Is this an Oni disc? -------------------------------------------------------------------------
 # $1 is an .iso or a mounted disc. Only ever call this as a condition.
@@ -218,7 +229,42 @@ menu_run() {
 }
 need_terminal() { [ -t 0 ] && [ -t 1 ] || die "the menu needs a terminal; use --yes to run without it"; }
 
-cleanup() { menu_close; [ -z "$TMP" ] || rm -rf -- "${TMP:?}"; }
+# --- Log ------------------------------------------------------------------------------------------
+# Starts after the menu, which needs the real terminal. Everything printed from here on goes to both.
+start_log() {
+	mkdir -p "$LOG_DIR"
+	LOG="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
+	{
+		echo "Oni installer log, $(date)"
+		echo "command: $0 $ARGS"
+		echo "system:  $(uname -sr), session ${XDG_SESSION_TYPE:-unknown}"
+		echo "wine:    $("$WINE" --version)"
+		echo "java:    $JAVA"
+		echo "mono:    $(mono --version | head -n 1)"
+		echo "source:  $SOURCE"
+		echo "prefix:  $PREFIX"
+		echo "options: ae=$WANT_AE arklite=$WANT_ARKLITE yes=$YES"
+		echo "packages missing at the start: ${missing[*]:-none}"
+	} >"$LOG"
+	exec 3>&1 4>&2
+	# -i: CTRL+C must reach this script's trap and leave tee alive to log it. sed drops colors and the
+	# \r redraws of curl's progress bar.
+	exec > >(tee -i >(sed -u 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/\r$//; s/^.*\r//' >>"$LOG")) 2>&1
+	LOG_PID=$!
+	trap 'echo "failed at line $LINENO: $BASH_COMMAND" >&2' ERR
+	echo "Log: $LOG"
+}
+stop_log() {
+	[ -n "$LOG_PID" ] || return 0
+	local i
+	exec 1>&3 2>&4 3>&- 4>&-
+	# Not a plain wait: a wineserver still shutting down can hold the pipe open for a few seconds.
+	for i in {1..30}; do kill -0 "$LOG_PID" 2>/dev/null || break; sleep 0.1; done
+	LOG_PID=""
+	echo "Log: $LOG"
+}
+
+cleanup() { menu_close; [ -z "$TMP" ] || rm -rf -- "${TMP:?}"; stop_log; }
 trap cleanup EXIT
 trap 'menu_close; echo "Aborted."; exit 130' INT TERM
 
@@ -252,7 +298,7 @@ if [ "$UNINSTALL" = 1 ]; then
 		echo "This deletes $PREFIX: Oni, AE, mods and your saves (AE/persist.dat)."
 		if ask "Delete it?"; then
 			wineserver -k 2>/dev/null || true
-			rm -rf -- "${PREFIX:?}"
+			rm -rf -- "${PREFIX:?}" "${LOG_DIR:?}"
 			echo "deleted"
 		else
 			echo "Kept the game in $PREFIX."
@@ -309,6 +355,7 @@ SOURCE="$(expand_path "$SOURCE")"
 ONI="$(oni_dir "$PREFIX")"
 AE="$ONI/AE"
 export WINEPREFIX="$PREFIX" WINEDEBUG=-all
+start_log
 
 # --- 3. Wine prefix -------------------------------------------------------------------------------
 if [ ! -f "$PREFIX/system.reg" ]; then
@@ -391,10 +438,22 @@ if [ "$WANT_AE" = 1 ]; then
 	cat > "$BIN/oni-ae-launcher.sh" <<EOF
 #!/bin/bash
 cd $(printf %q "$ONI")
+export WINEPREFIX=$(printf %q "$PREFIX")
 exec $(printf %q "$JAVA") \\
     -jar "AE/AEInstaller/bin/AEInstaller2.jar"
 EOF
 	chmod +x "$BIN/oni-ae-launcher.sh"
+	# On Linux the AE Installer runs Tools/XmlTools/XmlTools, but XmlTools only comes for Windows and
+	# Mac, and without it Install leaves out every XML patch and says nothing. From /, so Wine is on Z:
+	# and the Unix paths the AE Installer passes resolve.
+	mkdir -p "$AE/Tools/XmlTools"
+	cat > "$AE/Tools/XmlTools/XmlTools" <<EOF
+#!/bin/bash
+cd /
+export WINEPREFIX=$(printf %q "$PREFIX") WINEDEBUG=-all
+exec $(printf %q "$WINE") $(printf %q "$AE/Tools/XmlTools/XmlTools.exe") "\$@"
+EOF
+	chmod +x "$AE/Tools/XmlTools/XmlTools"
 fi
 
 # Every size in an .ico/.exe goes to hicolor/<size>x<size>/apps/<name>.png
@@ -439,18 +498,36 @@ fi
 refresh_menu
 
 # --- 7. First run of the AE Installer -------------------------------------------------------------
-if [ "$WANT_AE" = 1 ] && [ ! -f "$AE/Oni.exe" ]; then
-	say "Setting up Anniversary Edition"
-	echo "The AE Installer opens now. The first time it prepares your levels (a few minutes),"
-	echo "then pick the mods you want, click Install, wait for it to finish and close it."
-	"$BIN/oni-ae-launcher.sh" || true
-	[ -f "$AE/Oni.exe" ] || echo "warning: AE isn't installed yet (no AE/Oni.exe); open \"Oni Anniversary Edition\" from the menu and click Install"
+if [ "$WANT_AE" = 1 ]; then
+	while ! ae_ready; do
+		say "Setting up Anniversary Edition"
+		if ae_done; then
+			echo "The last Install in this AE left out its XML patches, so level0 is wrong and multiplayer"
+			echo "refuses it. The AE Installer opens now: click Install, wait for it to finish, then close it."
+		else
+			echo "The AE Installer opens now. The first time it prepares your levels (a few minutes)."
+			echo "Then pick the mods you want and click Install, even with no mods picked: that's what builds"
+			echo "the game's levels. Wait for it to finish, then close it."
+		fi
+		"$BIN/oni-ae-launcher.sh" || true
+		ae_ready && break
+		if ae_patch_failed; then
+			echo "The AE Installer's Install left out XML patches again; see AE/AEInstaller/Installation.log."
+		else
+			echo "The AE Installer closed without installing, so AE has no levels and Oni can't start yet."
+		fi
+		[ "$YES" = 0 ] && ask "Open it again?" || break
+	done
+	ae_done || warn "AE isn't installed yet; open \"Oni Anniversary Edition\" from the menu and click Install"
+	if ae_done && ae_patch_failed; then
+		warn "the AE Installer's last Install had errors, so multiplayer won't work; see AE/AEInstaller/Installation.log"
+	fi
 fi
 
 # --- 8. Arklite -----------------------------------------------------------------------------------
 if [ "$WANT_ARKLITE" = 1 ]; then
-	if [ ! -f "$AE/Oni.exe" ]; then
-		echo "warning: skipped Arklite, because AE isn't installed yet; run this again once it is"
+	if ! ae_done; then
+		warn "skipped Arklite, because AE isn't installed yet; run this again once it is"
 	else
 		say "Installing Arklite (latest release)"
 		release="$(curl -fsSL "$ARKLITE_API")" || die "couldn't reach GitHub: $ARKLITE_API"
@@ -464,6 +541,15 @@ if [ "$WANT_ARKLITE" = 1 ]; then
 	fi
 fi
 
+if [ "$WANT_AE" = 1 ] && [ -f "$AE/AEInstaller/Installation.log" ]; then
+	{ printf '\n--- AE Installer: Installation.log ---\n'; cat "$AE/AEInstaller/Installation.log"; } >>"$LOG"
+fi
+
+if [ "$ISSUES" != 0 ]; then
+	say "Finished, but the game isn't ready: see the warnings above"
+	echo "Game: $ONI"
+	exit 1
+fi
 say "Done"
 if [ "$WANT_AE" = 1 ]; then
 	echo "Menu: \"Oni (AE)\" plays, \"Oni Anniversary Edition\" manages mods."

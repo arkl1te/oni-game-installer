@@ -79,11 +79,13 @@ On Arch, CachyOS, Manjaro and similar systems, the installer offers to install t
 4. If you kept the Anniversary Edition:
 
    1. A small "AEInstaller2 self updater" window opens. When it says AEI is up to date, click **Close and launch AEI**.
-   2. The first time, the AE Installer spends a few minutes preparing your levels. Pick the mods you want, click **Install**, wait for it to finish and close it.
+   2. The first time, the AE Installer spends a few minutes preparing your levels. Pick the mods you want and click **Install**, even with no mods picked: that's what builds the game's levels. Wait for it to finish and close it. On Linux, if you close it without installing, the installer offers to open it again.
 
    The latest Arklite release is then downloaded and installed.
 
 If the installer stops partway through, run it again. It skips the steps that are already done.
+
+On Linux, if the AE Installer's last **Install** left out its XML patches, running this again opens the AE Installer so you can click **Install** once more. Without those patches `level0` differs from everyone else's, and multiplayer refuses the game.
 
 ### Windows will "protect you"
 
@@ -148,6 +150,7 @@ The Anniversary Edition still opens its own windows, so someone needs to be at t
 | Game | `C:\Games\Oni` | `~/Games/oni/drive_c/Program Files (x86)/Oni` |
 | Saves and settings | `…\Oni\AE\persist.dat`, `…\Oni\AE\daodan.ini` | `…/Oni/AE/persist.dat`, `…/Oni/AE/daodan.ini` |
 | Launch scripts | | `~/.local/bin/oni-ae-game.sh`, `~/.local/bin/oni-ae-launcher.sh` |
+| Installation logs | | `~/.local/state/oni-installer/install-<date>.log` (the AE Installer's own log is copied to the end) |
 | Menu entries | Start menu, in the **Oni** folder | `~/.local/share/applications/oni-ae-game.desktop`, `oni-ae-launcher.desktop` |
 
 ## Building
