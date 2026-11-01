@@ -14,11 +14,11 @@ Linux: the game runs under Wine.
 
 This installer doesn't include or download the game. 
 
-* You need your own copy of Oni, in either of these forms:
-  - An `.iso` of the disc
-  - The CD, or an `.iso` mounted as a CD drive
-* An internet connection to download the Anniversary Edition from mods.oni2.net and Arklite from GitHub. You don't need one if you turn both off.
-* About 630 MB of free space for Oni, plus room for the Anniversary Edition and your mods (if you decide to install any).
+| | Windows | Linux |
+| --- | --- | --- |
+| Game | Your own copy of Oni for Windows: an `.iso` of the disc, the CD, or an `.iso` mounted as a CD drive | Same as Windows |
+| Internet connection | Only for the Anniversary Edition (mods.oni2.net) and Arklite (GitHub) | Always on a first install, for the Wine components and any missing packages. Also for the Anniversary Edition and Arklite |
+| Disk space | About 630 MB for Oni. About 900 MB more with the Anniversary Edition, plus any mods | Same as Windows, plus about 700 MB for Wine and about 450 MB while installing |
 
 ### Windows
 
@@ -61,20 +61,20 @@ On Arch, CachyOS, Manjaro and similar systems, the installer offers to install t
    Press CTRL+C to abort installation.
    ```
 
-   Move with the arrow keys and press Enter to act on the highlighted line:
+   Move with the arrow keys and press ENTER to act on the highlighted line:
 
-   * **Source**: points to the game's installing files. If the `.iso` file isn't detected here, you can press Enter and paste its path, or change it to your CD: a drive letter (such as `D:` on Windows) or a mount point (`/run/media/you/ONI` on Linux). Press TAB to autocomplete. 
+   * **Source**: points to the game's installing files. If the path to the `.iso` file isn't seen here, you can press ENTER and paste its path, or change it to your CD: a drive letter (such as `D:` on Windows) or a mount point (`/run/media/you/ONI` on Linux). Press TAB to autocomplete. 
      The line shows **(OK)** in green, or **(Oni not found)** in red.
    * **Target** is where the game will install to play.
    * **Anniversary Edition** and **Arklite patch** can be turned off. Arklite needs the Anniversary Edition, so turning one on or off can change the other.
    * **Start** installs. It won't start until Source shows **(OK)**.
 
-   On Windows, you can also drop your `.iso` on the window while editing Source, and Esc cancels the edit.
+   On Windows, you can also drop your `.iso` on the window while editing Source, and ESC cancels the edit.
 
 3. Installing:
 
-   * **Windows:** the files are copied. Every file is checked against the disc, so a damaged image stops with an error. If this fails or you press Ctrl+C, the files it wrote are removed.
-   * **Linux:** Oni's own setup opens. Keep its folder, click **Next** to the end, and answer **No** to GLSetup, registering and the desktop shortcut. When it opens a folder window at the end, close that window so the installer can continue.
+   * **Windows**: the files are copied. Every file is checked against the disc, so a damaged image stops with an error. If this fails or you press CTRL+C, the files it wrote are removed.
+   * **Linux**: Oni's own setup opens. Keep its folder, click **Next** to the end, and answer **No** to GLSetup, registering and the desktop shortcut. When it opens a folder window at the end, close that window so the installer can continue.
 
 4. If you kept the Anniversary Edition:
 
@@ -103,8 +103,8 @@ On Windows, avoid `Program Files`: Oni keeps its saves and settings in its own f
 
 ## Uninstall
 
-* **Windows:** remove Oni from **Settings > Apps**, or use **Uninstall Oni** in the Start menu.
-* **Linux:** run this:
+* **Windows**: remove Oni from **Settings > Apps**, or use **Uninstall Oni** in the Start menu.
+* **Linux**: run this:
 
   ```bash
   ./install-oni.sh --uninstall
@@ -122,7 +122,6 @@ The installer asks once more before deleting everything.
 ## Optional - command line
 
 To skip the menu:
-
 
 ### Windows
 ```
