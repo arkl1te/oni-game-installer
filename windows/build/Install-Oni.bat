@@ -32,8 +32,8 @@ pause
 exit /b %ONI_CODE%
 //ONI-CS-BEGIN
 // Installs Oni for this user from your disc, without running the disc's setup, then optionally the
-// Anniversary Edition (official setup, mods.oni2.net) and Arklite (latest GitHub release). It's a
-// console menu: arrow keys move, Enter acts.
+// Anniversary Edition (official setup, mods.oni2.net) and Arklite (latest GitHub release, with its
+// maps into AE\GameDataFolder\CustomLevels). It's a console menu: arrow keys move, Enter acts.
 // C# 5 and .NET 4 only: this is compiled by Windows PowerShell 5.1, which every Windows 10 has.
 //
 // The disc's ONISETUP.EXE is a MindVision Installer VISE stub, and the game is in ONISETUP.002:
@@ -802,9 +802,48 @@ static class Extras {
 		return false;
 	}
 
+	// The AE Installer decides that .NET is missing unless it can open this key (HKLM, the 64-bit
+	// view on 64-bit Windows, else the 32-bit one); its values don't matter. Only the optional
+	// ".NET Framework 3.5" feature creates it, and Windows fetches that from Windows Update. But
+	// OniSplit, the only .NET program the AE Installer runs, also runs on the .NET 4 built into
+	// Windows 10 and 11 (OniSplit.exe.config lists v4.0.30319), so an empty key is all it takes.
+	// Empty, the key doesn't fool programs that look for .NET 3.5 properly: they read its Install
+	// value. Turning the real feature on later fills the key in.
+	const string DotNet2Key = "SOFTWARE\\Microsoft\\NET Framework Setup\\NDP\\v2.0.50727";
+
+	static bool HasDotNet2Key(RegistryView view) {
+		try {
+			using (RegistryKey hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view))
+			using (RegistryKey k = hklm.OpenSubKey(DotNet2Key))
+				return k != null;
+		} catch (Exception) {
+			return false;
+		}
+	}
+
+	static void EnsureDotNetKey() {
+		if (HasDotNet2Key(RegistryView.Registry64) && HasDotNet2Key(RegistryView.Registry32)) return;
+		string reg = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "reg.exe");
+		string add = "\"" + reg + "\" add \"HKLM\\" + DotNet2Key + "\" /f /reg:";
+		Say("Preparing Windows for the AE Installer");
+		Console.WriteLine("The AE Installer looks for .NET 3.5 in the registry, though the .NET built into Windows");
+		Console.WriteLine("runs its tools. Windows asks for admin rights to add the empty key it looks for.");
+		try {
+			ProcessStartInfo info = new ProcessStartInfo(Path.Combine(Path.GetDirectoryName(reg), "cmd.exe"), "/c \"" + add + "64 & " + add + "32\"");
+			info.UseShellExecute = true;
+			info.Verb = "runas";
+			info.WindowStyle = ProcessWindowStyle.Hidden;
+			using (Process p = Process.Start(info)) Wait(p);
+		} catch (System.ComponentModel.Win32Exception) { // said no to the admin prompt
+		}
+		if (!HasDotNet2Key(RegistryView.Registry64))
+			throw new OniError("Without this key the AE Installer says .NET is missing. Run this in a Command Prompt opened\nas administrator, then run the installer again:\n  reg add \"HKLM\\" + DotNet2Key + "\" /f /reg:64");
+	}
+
 	public static void InstallAe(Options o) {
 		string ae = Path.Combine(o.Dir, "AE");
 		string aei = Path.Combine(ae, "AEInstaller");
+		EnsureDotNetKey();
 		if (File.Exists(Path.Combine(aei, "bin\\AEInstaller2.jar"))) {
 			Console.WriteLine("Anniversary Edition is already in " + ae);
 		} else {
@@ -892,6 +931,88 @@ static class Extras {
 		}
 	}
 
+	// Arklite's installer keeps AE's realbink.dll (Bink) as bink_orig.dll. If an Arklite zip of 0.4.0 or
+	// older was extracted straight into AE, its 3.5 KB loader replaced Bink and that installer stops: put
+	// Bink back from AE's Daodan package (Oni\binkw32.dll is the same file) so any release installs.
+	static void RestoreBink(string oni, string ae) {
+		string real = Path.Combine(ae, "realbink.dll"), kept = Path.Combine(ae, "bink_orig.dll");
+		if (File.Exists(kept) || (File.Exists(real) && new FileInfo(real).Length >= 65536)) return;
+		List<string> sources = new List<string>();
+		string packages = Path.Combine(ae, "AEInstaller\\packages");
+		if (Directory.Exists(packages))
+			foreach (string d in Directory.GetDirectories(packages, "*Daodan*")) sources.Add(Path.Combine(d, "plain\\win_only\\realbink.dll"));
+		sources.Add(Path.Combine(oni, "binkw32.dll"));
+		foreach (string s in sources) {
+			if (!File.Exists(s) || new FileInfo(s).Length < 65536) continue;
+			try {
+				File.Copy(s, kept);
+				Console.WriteLine("AE's realbink.dll (Bink) had been replaced; put it back from " + s);
+			} catch (Exception) { // Arklite's installer says why it can't write there
+			}
+			return;
+		}
+	}
+
+	static void CopyTree(string from, string to) {
+		Directory.CreateDirectory(to);
+		foreach (string f in Directory.GetFiles(from)) File.Copy(f, Path.Combine(to, Path.GetFileName(f)), true);
+		foreach (string d in Directory.GetDirectories(from)) CopyTree(d, Path.Combine(to, Path.GetFileName(d)));
+	}
+
+	// Arklite's maps (Arklite-maps-<version>.zip, a download of the very release, by its tag, the Arklite zip
+	// came from) go into AE's CustomLevels: each map folder (one with a level50_Final.dat) replaces the one of
+	// the same name there. A release without one, or a maps download that fails, leaves just Arklite installed.
+	// The zip holds the map folders; up to 0.6.0's it held a <Map>.zip per map, which are unpacked too.
+	// Nothing here stops the install: a player joining a server that runs one of these maps gets it anyway.
+	static void InstallMaps(string json, string ae, string work) {
+		// only one of this release's own downloads, under its own tag (never a link in its notes)
+		Match tag = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]*)\"");
+		string url = null;
+		if (tag.Success)
+			foreach (Match m in Regex.Matches(json, "\"browser_download_url\"\\s*:\\s*\"(https:[^\"]*)\"")) {
+				string u = m.Groups[1].Value;
+				int slash = u.LastIndexOf('/');
+				string name = u.Substring(slash + 1);
+				if (u.Substring(0, slash).EndsWith("/releases/download/" + tag.Groups[1].Value, StringComparison.Ordinal) &&
+				    name.StartsWith("Arklite-maps-", StringComparison.Ordinal) && name.EndsWith(".zip", StringComparison.Ordinal)) {
+					url = u;
+					break;
+				}
+			}
+		if (url == null) {
+			Console.WriteLine("note: Arklite's release " + (tag.Success ? tag.Groups[1].Value : "?") + " has no maps zip, so only Arklite was installed.");
+			return;
+		}
+		Say("Installing Arklite's maps");
+		string dir = Path.Combine(work, "maps");
+		try {
+			string zip = Path.Combine(work, "arklite-maps.zip");
+			Download(url, zip);
+			Unzip(zip, dir);
+			foreach (string z in Directory.GetFiles(dir, "*.zip")) Unzip(z, dir); // (0.6.0 and older: a zip per map)
+		} catch (OniError e) {
+			Console.WriteLine("note: " + e.Message + "\nOnly Arklite was installed (a map downloads by itself when you join a server running it).");
+			return;
+		}
+		string levels = Path.Combine(ae, "GameDataFolder\\CustomLevels");
+		List<string> names = new List<string>();
+		foreach (string m in Directory.GetDirectories(dir)) {
+			if (!File.Exists(Path.Combine(m, "level50_Final.dat"))) continue;
+			string name = Path.GetFileName(m), to = Path.Combine(levels, name);
+			try {
+				if (Directory.Exists(to)) Directory.Delete(to, true);
+				CopyTree(m, to);
+				names.Add(name);
+			} catch (IOException e) {
+				Console.WriteLine("note: " + name + " couldn't be put in " + levels + ": " + e.Message);
+			} catch (UnauthorizedAccessException e) {
+				Console.WriteLine("note: " + name + " couldn't be put in " + levels + ": " + e.Message);
+			}
+		}
+		if (names.Count == 0) Console.WriteLine("note: no map was installed.");
+		else Console.WriteLine(names.Count + " map(s) in " + levels + ": " + string.Join(", ", names.ToArray()));
+	}
+
 	public static void InstallArklite(Options o) {
 		string ae = Path.Combine(o.Dir, "AE");
 		if (!File.Exists(Path.Combine(ae, "Oni.exe"))) {
@@ -917,12 +1038,14 @@ static class Extras {
 			Unzip(zip, Path.Combine(work, "files"));
 			string[] found = Directory.GetFiles(Path.Combine(work, "files"), "install.bat", SearchOption.AllDirectories);
 			if (found.Length == 0) throw new OniError("The Arklite release has no install.bat.");
+			RestoreBink(o.Dir, ae);
 			ProcessStartInfo info = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec"), "/c \"\"" + found[0] + "\" \"" + ae + "\"\"");
 			info.UseShellExecute = false;
 			using (Process p = Process.Start(info)) Wait(p);
 			FileInfo wanted = new FileInfo(Path.Combine(Path.GetDirectoryName(found[0]), "Arklite.dll"));
 			FileInfo got = new FileInfo(Path.Combine(ae, "Arklite.dll"));
-			if (!got.Exists || got.Length != wanted.Length) throw new OniError("Arklite wasn't installed. Is Oni running?");
+			if (!got.Exists || got.Length != wanted.Length) throw new OniError("Arklite wasn't installed; its installer says why above.");
+			InstallMaps(json, ae, work);
 		} finally {
 			try {
 				Directory.Delete(work, true);

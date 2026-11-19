@@ -6,6 +6,8 @@
 #   <prefix>/drive_c/Program Files (x86)/Oni      Oni, installed by the setup on your disc
 #   <prefix>/drive_c/Program Files (x86)/Oni/AE   Anniversary Edition (official setup, mods.oni2.net)
 #                                                 and Arklite (latest GitHub release)
+#   <prefix>/drive_c/Program Files (x86)/Oni/AE/GameDataFolder/CustomLevels   with Arklite: its maps
+#                                                 (Arklite-maps-<version>.zip of the same release)
 #   ~/.local/bin/oni-ae-game.sh      runs Oni.exe windowed (-noswitch -debugfiles) under Wine
 #   ~/.local/bin/oni-ae-launcher.sh  runs the AE Installer on native Java 8 (OniSplit on native mono)
 #   ~/.local/share/applications/oni-ae-{game,launcher}.desktop   "Oni (AE)", "Oni Anniversary Edition"
@@ -525,6 +527,52 @@ if [ "$WANT_AE" = 1 ]; then
 fi
 
 # --- 8. Arklite -----------------------------------------------------------------------------------
+# Arklite's maps (Arklite-maps-<version>.zip, a download of the very release, by its tag, the Arklite zip
+# came from) go into AE's CustomLevels: each map folder (one with a level50_Final.dat) replaces the one of
+# the same name there. A release without one, or a maps download that fails, leaves just Arklite installed.
+# The zip holds the map folders; up to 0.6.0's it held a <Map>.zip per map, which are unpacked too.
+# Nothing here stops the install: a player joining a server that runs one of these maps gets it anyway.
+install_maps() {
+	local url="" tag u dir m z n=0 names=""
+	# only one of this release's own downloads, under its own tag (never a link in its notes)
+	tag="$(grep -o '"tag_name": *"[^"]*"' <<<"$1" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')" || true
+	while IFS= read -r u; do
+		u="$(sed 's/.*"\(https:[^"]*\)"$/\1/' <<<"$u")"
+		if [ -n "$tag" ] && [ "${u%/*}" != "$u" ] && [[ "${u%/*}" == */releases/download/"$tag" ]] && [[ "${u##*/}" == Arklite-maps-*.zip ]]; then
+			url="$u"
+			break
+		fi
+	done < <(grep -o '"browser_download_url": *"https:[^"]*"' <<<"$1" || true)
+	if [ -z "$url" ]; then
+		echo "note: Arklite's release ${tag:-?} has no maps zip, so only Arklite was installed"
+		return 0
+	fi
+	say "Installing Arklite's maps"
+	dir="$TMP/arklite-maps"
+	if ! curl -fL --progress-bar -o "$TMP/arklite-maps.zip" "$url" || ! 7z x -y -o"$dir" "$TMP/arklite-maps.zip" >/dev/null; then
+		echo "note: couldn't get $url, so only Arklite was installed (a map downloads by itself when you join a server running it)" >&2
+		return 0
+	fi
+	for z in "$dir"/*.zip; do   # (0.6.0 and older: a zip per map)
+		[ -f "$z" ] || continue
+		7z x -y -o"$dir" "$z" >/dev/null || echo "note: 7-Zip couldn't read ${z##*/} in the maps zip" >&2
+	done
+	mkdir -p "$AE/GameDataFolder/CustomLevels"
+	for m in "$dir"/*/; do
+		m="${m%/}"
+		[ -f "$m/level50_Final.dat" ] || continue
+		rm -rf "$AE/GameDataFolder/CustomLevels/${m##*/}"
+		cp -r "$m" "$AE/GameDataFolder/CustomLevels/"
+		n=$((n + 1))
+		names+="${names:+, }${m##*/}"
+	done
+	if [ "$n" = 0 ]; then
+		echo "note: the maps zip held no map, so none were installed" >&2
+	else
+		echo "$n map(s) in $AE/GameDataFolder/CustomLevels: $names"
+	fi
+}
+
 if [ "$WANT_ARKLITE" = 1 ]; then
 	if ! ae_done; then
 		warn "skipped Arklite, because AE isn't installed yet; run this again once it is"
@@ -537,7 +585,20 @@ if [ "$WANT_ARKLITE" = 1 ]; then
 		7z x -y -o"$TMP/arklite" "$TMP/arklite.zip" >/dev/null || die "7-Zip couldn't read $url"
 		script="$(find "$TMP/arklite" -name install.sh -print -quit)"
 		[ -n "$script" ] || die "the Arklite release has no install.sh"
+		# Arklite's installer keeps AE's realbink.dll (Bink) as bink_orig.dll. If an Arklite zip of 0.4.0 or
+		# older was extracted straight into AE, its 3.5 KB loader replaced Bink and that installer stops: put
+		# Bink back from AE's Daodan package (Oni/binkw32.dll is the same file) so any release installs.
+		if [ ! -e "$AE/bink_orig.dll" ] && { [ ! -f "$AE/realbink.dll" ] || [ "$(wc -c <"$AE/realbink.dll")" -lt 65536 ]; }; then
+			for b in "$AE"/AEInstaller/packages/*Daodan*/plain/win_only/realbink.dll "$ONI/binkw32.dll"; do
+				if [ -f "$b" ] && [ "$(wc -c <"$b")" -ge 65536 ]; then
+					cp "$b" "$AE/bink_orig.dll"
+					echo "AE's realbink.dll (Bink) had been replaced; put it back from $b"
+					break
+				fi
+			done
+		fi
 		bash "$script" "$AE"
+		install_maps "$release"
 	fi
 fi
 
